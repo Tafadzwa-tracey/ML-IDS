@@ -1,4 +1,4 @@
-import streamlit as st  # library used to build web app UI
+'''import streamlit as st  # library used to build web app UI
 import pandas as pd  # library used for reading and manipulating CSV file
 from sklearn.preprocessing import LabelEncoder, StandardScaler  # LabelEncoder converts text labels into numbers, StandardScaler normalizes numeric features
 from sklearn.ensemble import RandomForestClassifier  # imports Random Forest learning model
@@ -37,11 +37,17 @@ if uploaded_file:
     model = RandomForestClassifier(n_estimators=100, random_state=42)  # Create Random Forest with 100 decision trees
     model.fit(X_train, y_train)  # Train model using training data
     st.success("Model Trained Successfully!")  # Message to the app
+    # Add this to your Streamlit code under the "Evaluation" section
+    st.subheader("Global Feature Importance (SHAP)")
+    fig, ax = plt.subplots()
+    shap.summary_plot(shap_values, X, plot_type="bar", show=False)
+    st.pyplot(fig)
 
     # ------------------ Evaluation ------------------
     y_pred = model.predict(X_test)  # Predict labels for test data
     st.subheader("Classification Report")
     st.text(classification_report(y_test, y_pred))  # Displays precision, recall, f1-score and accuracy
+
 
     # ------------------ SHAP Explanation ------------------
     st.subheader("Intrusion Alerts & Why They Were Detected")  # title for AI output
@@ -95,4 +101,131 @@ if uploaded_file:
     st.subheader("Traffic Overview")  # Section title for chart
     if 'Time' in df.columns:  # Ensure dataset has a time column
         traffic = df.groupby(['Time', 'Label']).size().unstack(fill_value=0)  # Count traffic over time per label
-        st.line_chart(traffic)  # Display line chart in Streamlit
+        st.line_chart(traffic)  # Display line chart in Streamlit'''
+
+import streamlit as st
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+import matplotlib.pyplot as plt
+import shap
+import numpy as np
+
+# Page Config
+st.set_page_config(page_title="ML IDS Research", layout="wide")
+st.title("ML Intrusion Detection System")
+st.write("🔬 **Research Topic:** Explainable AI (XAI) for Cybersecurity in Telecom")
+
+# 1. Upload CSV
+uploaded_file = st.file_uploader("Upload Network Logs (CSV)", type="csv")
+
+if uploaded_file:
+    df = pd.read_csv(uploaded_file)
+    st.subheader("Dataset Preview")
+    st.dataframe(df.head())
+
+    # --- Preprocessing ---
+    if 'Protocol' in df.columns:
+        df['Protocol'] = LabelEncoder().fit_transform(df['Protocol'].astype(str))
+
+    for col in ['Packets', 'Bytes']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # Cleaning: Remove missing values
+    df = df.dropna(subset=['Packets', 'Bytes', 'Label'])
+    
+    # Scaling
+    scaler = StandardScaler()
+    df[['Packets', 'Bytes']] = scaler.fit_transform(df[['Packets', 'Bytes']])
+
+    # --- Feature Selection ---
+    # We keep the names in 'X' so the model stays happy
+    X = df.drop(columns=['Label', 'Time', 'Source IP', 'Dest IP'], errors='ignore')
+    y = df['Label']
+
+    # --- Train Model ---
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+    st.success("✅ Model Trained Successfully with Feature Names!")
+
+    # --- Evaluation ---
+    y_pred = model.predict(X_test)
+    st.subheader("Model Performance Metrics")
+    st.text(classification_report(y_test, y_pred))
+
+    # -------------------------------------------------------------------------
+    # Phase 1: GLOBAL RESEARCH BASELINE (The "Figure 1" for your paper)
+    # -------------------------------------------------------------------------
+    st.header("Phase 1: Global Feature Importance")
+    explainer = shap.TreeExplainer(model)
+    
+    # Sample 100 rows for SHAP to save hotspot data/speed
+    sample_size = min(100, len(X_test))
+    sample_X = X_test.iloc[:sample_size]
+    shap_values_global = explainer.shap_values(sample_X)
+
+    fig_global, ax_global = plt.subplots()
+    shap.summary_plot(
+        shap_values_global, 
+        sample_X, 
+        plot_type="bar", 
+        class_names=model.classes_, 
+        show=False
+    )
+    st.pyplot(fig_global)
+    st.info("📊 **Research Note:** This chart proves which features define your telecom network security.")
+
+    # -------------------------------------------------------------------------
+    # Phase 2: LOCAL ALERTS (The "Why" reasons)
+    # -------------------------------------------------------------------------
+    st.header("Phase 2: Intrusion Alerts & Evidence")
+
+    classes = list(model.classes_)
+    
+    # We calculate SHAP for the top rows of the original dataframe
+    # Using X.iloc to ensure names are preserved
+    alert_limit = min(30, len(df)) 
+    shap_values_local = explainer.shap_values(X.iloc[:alert_limit])
+
+    for i in range(alert_limit):
+        row = df.iloc[i]
+        src_ip = row.get('Source IP', 'Unknown')
+        dst_ip = row.get('Dest IP', 'Unknown')
+
+        # FIX: Pass a DataFrame slice (X.iloc[i:i+1]) instead of a numpy array
+        # This keeps the feature names (Packets, Bytes) so the model doesn't error out
+        current_row = X.iloc[i : i+1]
+        pred = model.predict(current_row)[0]
+
+        if str(pred).lower() != "normal":
+            # Identify the index of the predicted attack class
+            class_idx = classes.index(pred)
+            
+            # Get SHAP values for this specific row and class
+            sv = shap_values_local[class_idx][i]
+
+            # Find the top 2 features contributing to this specific alert
+            top_indices = np.argsort(np.abs(sv))[-2:]
+            top_indices = top_indices[::-1] # Sort descending
+
+            reason1 = X.columns[top_indices[0]]
+            reason2 = X.columns[top_indices[1]]
+
+            st.warning(f"""
+🚨 **INTRUSION DETECTED**
+* **Connection:** {src_ip} ➔ {dst_ip}
+* **Attack Category:** {pred}
+* **Evidence (Why):** Detection triggered primarily by **{reason1}** and **{reason2}**.
+            """)
+        else:
+            st.info(f"✅ **Normal Traffic:** {src_ip} ➔ {dst_ip}")
+
+    # Traffic Overview
+    if 'Time' in df.columns:
+        st.subheader("Network Traffic Timeline")
+        traffic = df.groupby(['Time', 'Label']).size().unstack(fill_value=0)
+        st.line_chart(traffic)
